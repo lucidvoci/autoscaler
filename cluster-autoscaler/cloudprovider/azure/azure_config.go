@@ -59,6 +59,7 @@ const (
 	// auth methods
 	authMethodPrincipal = "principal"
 	authMethodCLI       = "cli"
+	authMethodMSAL      = "msal"
 
 	// toggle
 	dynamicInstanceListDefault = false
