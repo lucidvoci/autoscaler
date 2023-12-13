@@ -73,12 +73,12 @@ type Autoscaler interface {
 }
 
 // NewAutoscaler creates an autoscaler of an appropriate type according to the parameters
-func NewAutoscaler(opts AutoscalerOptions, informerFactory informers.SharedInformerFactory) (Autoscaler, errors.AutoscalerError) {
-	err := initializeDefaultOptions(&opts, informerFactory)
-	if err != nil {
-		return nil, errors.ToAutoscalerError(errors.InternalError, err)
-	}
-	return NewStaticAutoscaler(
+func NewAutoscaler(opts AutoscalerOptions, informerFactory informers.SharedInformerFactory) (StaticAutoscaler, errors.AutoscalerError) {
+	initializeDefaultOptions(&opts, informerFactory)
+	// if err != nil {
+	// 	return nil, errors.ToAutoscalerError(errors.InternalError, err)
+	// }
+	return *NewStaticAutoscaler(
 		opts.AutoscalingOptions,
 		opts.PredicateChecker,
 		opts.ClusterSnapshot,

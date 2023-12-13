@@ -147,6 +147,10 @@ func (azure *AzureCloudProvider) Refresh() error {
 	return azure.azureManager.Refresh()
 }
 
+func GetAzureRef(name string) *azureRef {
+	return &azureRef{Name: name}
+}
+
 // azureRef contains a reference to some entity in Azure world.
 type azureRef struct {
 	Name string

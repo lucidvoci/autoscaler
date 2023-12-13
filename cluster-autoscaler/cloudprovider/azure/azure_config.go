@@ -498,7 +498,7 @@ func (cfg *Config) validate() error {
 	}
 
 	switch cfg.AuthMethod {
-	case "", authMethodPrincipal:
+	case "", authMethodPrincipal, authMethodMSAL:
 		if cfg.AADClientID == "" {
 			return errors.New("ARM Client ID not set")
 		}

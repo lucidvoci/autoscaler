@@ -88,7 +88,7 @@ type StaticAutoscaler struct {
 	lastScaleDownFailTime   time.Time
 	scaleDownPlanner        scaledown.Planner
 	scaleDownActuator       scaledown.Actuator
-	scaleUpOrchestrator     scaleup.Orchestrator
+	ScaleUpOrchestrator     scaleup.Orchestrator
 	processors              *ca_processors.AutoscalingProcessors
 	processorCallbacks      *staticAutoscalerProcessorCallbacks
 	initialized             bool
@@ -203,7 +203,7 @@ func NewStaticAutoscaler(
 		lastScaleDownFailTime:   initialScaleTime,
 		scaleDownPlanner:        scaleDownPlanner,
 		scaleDownActuator:       scaleDownActuator,
-		scaleUpOrchestrator:     scaleUpOrchestrator,
+		ScaleUpOrchestrator:     scaleUpOrchestrator,
 		processors:              processors,
 		processorCallbacks:      processorCallbacks,
 		clusterStateRegistry:    clusterStateRegistry,
@@ -558,7 +558,7 @@ func (a *StaticAutoscaler) RunOnce(currentTime time.Time) caerrors.AutoscalerErr
 		klog.V(1).Info("Unschedulable pods are very new, waiting one iteration for more")
 	} else {
 		scaleUpStart := preScaleUp()
-		scaleUpStatus, typedErr = a.scaleUpOrchestrator.ScaleUp(unschedulablePodsToHelp, readyNodes, daemonsets, nodeInfosForGroups)
+		scaleUpStatus, typedErr = a.ScaleUpOrchestrator.ScaleUp(unschedulablePodsToHelp, readyNodes, daemonsets, nodeInfosForGroups)
 		if exit, err := postScaleUp(scaleUpStart); exit {
 			return err
 		}
@@ -680,7 +680,7 @@ func (a *StaticAutoscaler) RunOnce(currentTime time.Time) caerrors.AutoscalerErr
 
 	if a.EnforceNodeGroupMinSize {
 		scaleUpStart := preScaleUp()
-		scaleUpStatus, typedErr = a.scaleUpOrchestrator.ScaleUpToNodeGroupMinSize(readyNodes, nodeInfosForGroups)
+		scaleUpStatus, typedErr = a.ScaleUpOrchestrator.ScaleUpToNodeGroupMinSize(readyNodes, nodeInfosForGroups)
 		if exit, err := postScaleUp(scaleUpStart); exit {
 			return err
 		}

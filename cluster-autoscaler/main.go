@@ -30,12 +30,16 @@ import (
 
 	"github.com/spf13/pflag"
 
+	appsv1 "k8s.io/api/apps/v1"
+	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apiserver/pkg/server/mux"
 	"k8s.io/apiserver/pkg/server/routes"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
+
+	// "k8s.io/autoscaler/cluster-autoscaler/cloudprovider/azure"
 	cloudBuilder "k8s.io/autoscaler/cluster-autoscaler/cloudprovider/builder"
 	"k8s.io/autoscaler/cluster-autoscaler/config"
 	"k8s.io/autoscaler/cluster-autoscaler/core"
@@ -57,6 +61,7 @@ import (
 	"k8s.io/autoscaler/cluster-autoscaler/utils/errors"
 	kube_util "k8s.io/autoscaler/cluster-autoscaler/utils/kubernetes"
 	scheduler_util "k8s.io/autoscaler/cluster-autoscaler/utils/scheduler"
+	"k8s.io/autoscaler/cluster-autoscaler/utils/taints"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/units"
 	"k8s.io/autoscaler/cluster-autoscaler/version"
 	"k8s.io/client-go/informers"
@@ -97,7 +102,7 @@ func multiStringFlag(name string, usage string) *MultiStringFlag {
 var (
 	clusterName             = flag.String("cluster-name", "", "Autoscaled cluster name, if available")
 	address                 = flag.String("address", ":8085", "The address to expose prometheus metrics.")
-	kubernetes              = flag.String("kubernetes", "", "Kubernetes master location. Leave blank for default")
+	kubernetes              = flag.String("kubernetes", "https://192.168.49.2:8443/api/v1/nodes", "Kubernetes master location. Leave blank for default")
 	kubeConfigFile          = flag.String("kubeconfig", "", "Path to kubeconfig file with authorization and master location information.")
 	kubeAPIContentType      = flag.String("kube-api-content-type", "application/vnd.kubernetes.protobuf", "Content type of requests sent to apiserver.")
 	_                       = flag.Int("kube-client-burst", rest.DefaultBurst, "Burst value for kubernetes client. (Deprecated, relay on APF for rate limiting)")
@@ -493,7 +498,7 @@ func buildAutoscaler(debuggingSnapshotter debuggingsnapshot.DebuggingSnapshotter
 	stop := make(chan struct{})
 	informerFactory.Start(stop)
 
-	return autoscaler, nil
+	return &autoscaler, nil
 }
 
 func run(healthCheck *metrics.HealthCheck, debuggingSnapshotter debuggingsnapshot.DebuggingSnapshotter) {
@@ -537,7 +542,101 @@ func run(healthCheck *metrics.HealthCheck, debuggingSnapshotter debuggingsnapsho
 	}
 }
 
+// Main for creating Azure Manager
+// func main() {
+// 	file, _ := os.Open("./config.json")
+// 	defer file.Close()
+// 	config := io.Reader(file)
+// 	do := cloudprovider.NodeGroupDiscoveryOptions{
+// 		NodeGroupSpecs:              make([]string, 0),
+// 		NodeGroupAutoDiscoverySpecs: make([]string, 0),
+// 	}
+// am, _ := azure.CreateAzureManager(config, do)
+// 	inst := azure.GetAzureRef("https://ms.portal.azure.com/#@microsoft.onmicrosoft.com/resource/subscriptions/e1fdce2f-2584-4b11-8750-9a1f800fb7b3/resourceGroups/mariakot-azure-cni/providers/Microsoft.Compute/virtualMachineScaleSets/bicep-poc-control-vmss/overview")
+// 	group, err := am.GetNodeGroupForInstance(inst)
+// 	fmt.Printf("err: %s", err)
+// 	fmt.Printf("ID: %s", group.Id())
+// }
+
 func main() {
+	// Create basic config from flags.
+	autoscalingOptions := createAutoscalingOptions()
+
+	kubeClient := kube_util.CreateKubeClient(autoscalingOptions.KubeClientOpts)
+
+	// Informer transform to trim ManagedFields for memory efficiency.
+	trim := func(obj interface{}) (interface{}, error) {
+		if accessor, err := meta.Accessor(obj); err == nil {
+			accessor.SetManagedFields(nil)
+		}
+		return obj, nil
+	}
+	informerFactory := informers.NewSharedInformerFactoryWithOptions(kubeClient, 0, informers.WithTransform(trim))
+
+	predicateChecker, err := predicatechecker.NewSchedulerBasedPredicateChecker(informerFactory, autoscalingOptions.SchedulerConfig)
+	if err != nil {
+		klog.Fatalf("Failed to create scheduler: %v", err)
+	}
+	deleteOptions := options.NewNodeDeleteOptions(autoscalingOptions)
+	drainabilityRules := rules.Default(deleteOptions)
+
+	opts := core.AutoscalerOptions{
+		AutoscalingOptions: autoscalingOptions,
+		ClusterSnapshot:    clustersnapshot.NewDeltaClusterSnapshot(),
+		KubeClient:         kubeClient,
+		InformerFactory:    informerFactory,
+		PredicateChecker:   predicateChecker,
+		DeleteOptions:      deleteOptions,
+		DrainabilityRules:  drainabilityRules,
+	}
+
+	opts.Processors = ca_processors.DefaultProcessors(autoscalingOptions)
+	opts.Processors.TemplateNodeInfoProvider = nodeinfosprovider.NewDefaultTemplateNodeInfoProvider(nodeInfoCacheExpireTime, *forceDaemonSets)
+	opts.Processors.PodListProcessor = podlistprocessor.NewDefaultPodListProcessor(opts.PredicateChecker)
+	scaleDownCandidatesComparers := []scaledowncandidates.CandidatesComparer{}
+	if autoscalingOptions.ParallelDrain {
+		sdCandidatesSorting := previouscandidates.NewPreviousCandidates()
+		scaleDownCandidatesComparers = []scaledowncandidates.CandidatesComparer{
+			emptycandidates.NewEmptySortingProcessor(emptycandidates.NewNodeInfoGetter(opts.ClusterSnapshot), deleteOptions, drainabilityRules),
+			sdCandidatesSorting,
+		}
+		opts.Processors.ScaleDownCandidatesNotifier.Register(sdCandidatesSorting)
+	}
+	sdProcessor := scaledowncandidates.NewScaleDownCandidatesSortingProcessor(scaleDownCandidatesComparers)
+	opts.Processors.ScaleDownNodeProcessor = sdProcessor
+
+	var nodeInfoComparator nodegroupset.NodeInfoComparator
+	if len(autoscalingOptions.BalancingLabels) > 0 {
+		nodeInfoComparator = nodegroupset.CreateLabelNodeInfoComparator(autoscalingOptions.BalancingLabels)
+	} else {
+		nodeInfoComparatorBuilder := nodegroupset.CreateGenericNodeInfoComparator
+		if autoscalingOptions.CloudProviderName == cloudprovider.AzureProviderName {
+			nodeInfoComparatorBuilder = nodegroupset.CreateAzureNodeInfoComparator
+		} else if autoscalingOptions.CloudProviderName == cloudprovider.AwsProviderName {
+			nodeInfoComparatorBuilder = nodegroupset.CreateAwsNodeInfoComparator
+			opts.Processors.TemplateNodeInfoProvider = nodeinfosprovider.NewAsgTagResourceNodeInfoProvider(nodeInfoCacheExpireTime, *forceDaemonSets)
+		} else if autoscalingOptions.CloudProviderName == cloudprovider.GceProviderName {
+			nodeInfoComparatorBuilder = nodegroupset.CreateGceNodeInfoComparator
+			opts.Processors.TemplateNodeInfoProvider = nodeinfosprovider.NewAnnotationNodeInfoProvider(nodeInfoCacheExpireTime, *forceDaemonSets)
+		}
+		nodeInfoComparator = nodeInfoComparatorBuilder(autoscalingOptions.BalancingExtraIgnoredLabels, autoscalingOptions.NodeGroupSetRatios)
+	}
+
+	opts.Processors.NodeGroupSetProcessor = &nodegroupset.BalancingNodeGroupSetProcessor{
+		Comparator: nodeInfoComparator,
+	}
+
+	// Create autoscaler.
+	var autoscaler core.StaticAutoscaler
+	autoscaler, err = core.NewAutoscaler(opts, informerFactory)
+
+	nodeInfos, _ := nodeinfosprovider.NewDefaultTemplateNodeInfoProvider(nil, false).Process(autoscaler.AutoscalingContext, []*apiv1.Node{}, []*appsv1.DaemonSet{}, taints.TaintConfig{}, time.Now())
+	autoscaler.ScaleUpOrchestrator.ScaleUp([]*apiv1.Pod{}, []*apiv1.Node{}, []*appsv1.DaemonSet{}, nodeInfos)
+	fmt.Printf("err: %s", err)
+
+}
+
+func maintmp() {
 	klog.InitFlags(nil)
 
 	leaderElection := defaultLeaderElectionConfiguration()
