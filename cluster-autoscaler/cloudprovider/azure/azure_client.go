@@ -21,11 +21,9 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
-	"net/url"
 	"os"
 	"time"
 
-	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2019-07-01/compute"
 	"github.com/Azure/azure-sdk-for-go/services/resources/mgmt/2017-05-10/resources"
 	"github.com/Azure/azure-sdk-for-go/services/storage/mgmt/2021-02-01/storage"
@@ -33,7 +31,6 @@ import (
 	"github.com/Azure/go-autorest/autorest/adal"
 	"github.com/Azure/go-autorest/autorest/azure"
 	"github.com/Azure/go-autorest/autorest/azure/auth"
-	"github.com/AzureAD/microsoft-authentication-library-for-go/apps/confidential"
 
 	klog "k8s.io/klog/v2"
 
@@ -224,48 +221,12 @@ func newServicePrincipalTokenFromCredentials(config *Config, env *azure.Environm
 	return nil, fmt.Errorf("no credentials provided for AAD application %s", config.AADClientID)
 }
 
-func newMSALClient(config *Config) (confidential.Client, error) {
-	b, err := os.ReadFile(config.AADClientCertPath)
-	if err != nil {
-		return confidential.Client{}, fmt.Errorf("couldn't read cert file %s: %w", config.AADClientCertPath, err)
-	}
-
-	cert, key, err := azidentity.ParseCertificates(b, nil)
-	if err != nil {
-		return confidential.Client{}, fmt.Errorf("couldn't parse certificate: %w", err)
-	}
-
-	authorityUrl, err := url.JoinPath(config.Location, config.TenantID)
-	if err != nil {
-		return confidential.Client{}, fmt.Errorf("failed to create authorityUrl: %w", err)
-	}
-
-	cred, err := confidential.NewCredFromCert(cert, key)
-	if err != nil {
-		return confidential.Client{}, fmt.Errorf("failed to create creds object from certificate+key: %w", err)
-	}
-
-	opts := []confidential.Option{
-		// confidential.WithAzureRegion(confidential.AutoDetectRegion()),
-		// confidential.WithKnownAuthorityHosts([]string{authorityHost}), // tmp
-		// confidential.WithInstanceDiscovery(false),                     // tmp
-	}
-
-	opts = append(opts, confidential.WithX5C())
-
-	client, err := confidential.New(authorityUrl, config.AADClientID, cred, opts...)
-	if err != nil {
-		return confidential.Client{}, fmt.Errorf("failed to create confidential client: %w", err)
-	}
-	return client, err
-}
-
 func newAuthorizer(config *Config, env *azure.Environment) (autorest.Authorizer, error) {
 	switch config.AuthMethod {
 	case authMethodCLI:
 		return auth.NewAuthorizerFromCLI()
 	case authMethodMSAL:
-		client, err := newMSALClient(config)
+		client, err := NewMSALClient(config)
 		if err != nil {
 			return nil, fmt.Errorf("retrieve service principal token: %v", err)
 		}
@@ -278,35 +239,6 @@ func newAuthorizer(config *Config, env *azure.Environment) (autorest.Authorizer,
 		return autorest.NewBearerAuthorizer(token), nil
 	default:
 		return nil, fmt.Errorf("unsupported authorization method: %s", config.AuthMethod)
-	}
-}
-
-type MSALBearerAuthorizer struct {
-	client   confidential.Client
-	tenantID string
-}
-
-// WithAuthorization returns a PrepareDecorator that adds an HTTP Authorization header whose
-// value is "Bearer " followed by the token.
-func (ba *MSALBearerAuthorizer) WithAuthorization() autorest.PrepareDecorator {
-	return func(p autorest.Preparer) autorest.Preparer {
-		return autorest.PreparerFunc(func(r *http.Request) (*http.Request, error) {
-			token, errT := ba.client.AcquireTokenByCredential(
-				context.Background(),
-				[]string{"https://management.azure.com/.default"},
-				confidential.WithTenantID(ba.tenantID), // tmp
-			)
-
-			if errT != nil {
-				return nil, fmt.Errorf("failed to retrieve a token: %w", errT)
-			}
-
-			r, err := p.Prepare(r)
-			if err == nil {
-				return autorest.Prepare(r, autorest.WithHeader("Authorization", fmt.Sprintf("Bearer %s", token.AccessToken)))
-			}
-			return r, err
-		})
 	}
 }
 

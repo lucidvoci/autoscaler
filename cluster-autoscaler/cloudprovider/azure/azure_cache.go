@@ -83,6 +83,7 @@ func newAzureCache(client *azClient, cacheTTL time.Duration, resourceGroup, vmTy
 	if err := cache.regenerate(); err != nil {
 		klog.Errorf("Error while regenerating Azure cache: %v", err)
 	}
+
 	return cache, nil
 }
 

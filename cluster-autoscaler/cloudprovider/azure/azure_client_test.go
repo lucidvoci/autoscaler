@@ -18,19 +18,22 @@ package azure
 
 import (
 	"net/http"
+	"os"
 	"testing"
 
 	"github.com/Azure/go-autorest/autorest"
 	"github.com/stretchr/testify/assert"
 )
 
-func TestNewAuthorizer(t *testing.T) {
-	cfg := &Config{}
-	cfg.AuthMethod = authMethodMSAL
-	cfg.Location = "https://useast-passive-dsts.dsts.core.windows.net/dstsv2/"
-	cfg.TenantID = "7a433bfc-2514-4697-b467-e0933190487f"
-	cfg.AADClientID = "319a9cc4-3ef7-490d-bca9-959d4c53cf80"
-	cfg.AADClientCertPath = "../../cert2.pfx"
+func TestMSALAuthorizer(t *testing.T) {
+	cfgFile, err := os.Open("../../config.json")
+	if err != nil {
+		assert.Fail(t, "Failed to open cloud config file")
+	}
+	defer cfgFile.Close()
+
+	cfg, _ := BuildAzureConfig(cfgFile)
+
 	authorizer, _ := newAuthorizer(cfg, nil)
 
 	prepaper := authorizer.WithAuthorization()
