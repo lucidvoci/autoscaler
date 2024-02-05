@@ -296,6 +296,7 @@ func (ba *MSALBearerAuthorizer) WithAuthorization() autorest.PrepareDecorator {
 				[]string{"https://management.azure.com/.default"},
 				confidential.WithTenantID(ba.tenantID), // tmp
 			)
+
 			if errT != nil {
 				return nil, fmt.Errorf("failed to retrieve a token: %w", errT)
 			}
