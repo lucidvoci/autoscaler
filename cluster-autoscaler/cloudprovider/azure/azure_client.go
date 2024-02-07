@@ -225,6 +225,12 @@ func newAuthorizer(config *Config, env *azure.Environment) (autorest.Authorizer,
 	switch config.AuthMethod {
 	case authMethodCLI:
 		return auth.NewAuthorizerFromCLI()
+	case authMethodMSAL:
+		client, err := NewMSALClient(config)
+		if err != nil {
+			return nil, fmt.Errorf("retrieve service principal token: %v", err)
+		}
+		return &MSALBearerAuthorizer{client, config.TenantID}, nil
 	case "", authMethodPrincipal:
 		token, err := newServicePrincipalTokenFromCredentials(config, env)
 		if err != nil {
