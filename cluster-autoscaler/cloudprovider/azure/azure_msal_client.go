@@ -17,7 +17,6 @@ limitations under the License.
 package azure
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -31,31 +30,6 @@ import (
 type MSALBearerAuthorizer struct {
 	client   confidential.Client
 	tenantID string
-}
-
-// WithAuthorization returns a PrepareDecorator that adds an HTTP Authorization header whose
-// value is "Bearer " followed by the token.
-func (ba *MSALBearerAuthorizer) WithAuthorization() autorest.PrepareDecorator {
-	return func(p autorest.Preparer) autorest.Preparer {
-		return autorest.PreparerFunc(func(r *http.Request) (*http.Request, error) {
-			// TODO: get refresh token when available
-			token, errT := ba.client.AcquireTokenByCredential(
-				context.Background(),
-				[]string{"https://management.azure.com/.default"},
-				confidential.WithTenantID(ba.tenantID),
-			)
-
-			if errT != nil {
-				return nil, fmt.Errorf("failed to retrieve a token: %w", errT)
-			}
-
-			r, err := p.Prepare(r)
-			if err == nil {
-				return autorest.Prepare(r, autorest.WithHeader("Authorization", fmt.Sprintf("Bearer %s", token.AccessToken)))
-			}
-			return r, err
-		})
-	}
 }
 
 func NewMSALClient(config *Config) (confidential.Client, error) {
@@ -80,16 +54,38 @@ func NewMSALClient(config *Config) (confidential.Client, error) {
 	}
 
 	opts := []confidential.Option{
-		// confidential.WithAzureRegion(confidential.AutoDetectRegion()),
-		// confidential.WithKnownAuthorityHosts([]string{authorityHost}), // tmp
-		// confidential.WithInstanceDiscovery(false),                     // tmp
+		confidential.WithX5C(),
 	}
-
-	opts = append(opts, confidential.WithX5C())
 
 	client, err := confidential.New(authorityUrl, config.AADClientID, cred, opts...)
 	if err != nil {
 		return confidential.Client{}, fmt.Errorf("failed to create confidential client: %w", err)
 	}
 	return client, err
+}
+
+// WithAuthorization returns a PrepareDecorator that adds an HTTP Authorization header whose
+// value is "Bearer " followed by the token.
+func (ba *MSALBearerAuthorizer) WithAuthorization() autorest.PrepareDecorator {
+	return func(p autorest.Preparer) autorest.Preparer {
+		return autorest.PreparerFunc(func(r *http.Request) (*http.Request, error) {
+			// TODO: get refresh token when available
+			token, err := ba.client.AcquireTokenByCredential(
+				r.Context(),
+				[]string{"https://management.azure.com/.default"},
+				confidential.WithTenantID(ba.tenantID),
+			)
+
+			if err != nil {
+				return nil, fmt.Errorf("failed to retrieve a token: %w", err)
+			}
+
+			r, err = p.Prepare(r)
+			if err != nil {
+				return r, fmt.Errorf("failed to wrap the http request: %w", err)
+			}
+
+			return autorest.Prepare(r, autorest.WithHeader("Authorization", fmt.Sprintf("Bearer %s", token.AccessToken)))
+		})
+	}
 }
